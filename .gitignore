@@ -1,0 +1,10 @@
+# Dependencias y entornos
+node_modules/
+backend/.venv/
+__pycache__/
+*.pyc
+# Configuración local con contraseñas (usar backend/.env.example)
+.env
+# Compilados (se publican en la Release de GitHub)
+frontend/dist/
+dist/
