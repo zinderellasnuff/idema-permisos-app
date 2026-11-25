@@ -7,7 +7,7 @@
 --          regla de compensación (los disparadores validan cada fila).
 -- Parte C: bajas lógicas de ejemplo.
 -- =====================================================================
-USE idema_permisos;
+USE permisos_hora;
 
 -- Parte A ------------------------------------------------------------
 -- Datos de prueba de la Entrega 4 (Tablas 9 a 18 del informe).

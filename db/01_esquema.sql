@@ -1,5 +1,5 @@
 -- =====================================================================
--- IDEMA - Registro de Inasistencias o Permisos (permisos por hora)
+-- Sistema de permisos - Registro de Inasistencias o Permisos (permisos por hora)
 -- Script 1 (Entrega 5): base de datos, tablas, restricciones, índices
 -- y disparadores.
 -- Motor: MySQL 8.0 (InnoDB), juego de caracteres utf8mb4.
@@ -13,13 +13,13 @@
 --     transiciones de estado, reglas de compensación y auditoría.
 -- =====================================================================
 
-DROP DATABASE IF EXISTS idema_permisos;
+DROP DATABASE IF EXISTS permisos_hora;
 
-CREATE DATABASE idema_permisos
+CREATE DATABASE permisos_hora
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_0900_ai_ci;
 
-USE idema_permisos;
+USE permisos_hora;
 
 -- ---------------------------------------------------------------------
 -- Tabla EMPLEADO: colaboradores que solicitan permisos.
@@ -161,10 +161,33 @@ BEGIN
   DECLARE v_usadas INT;
   DECLARE v_activo TINYINT;
 
-  SELECT activo INTO v_activo FROM empleado WHERE dni = NEW.dni;
+  -- El bloqueo de la fila del empleado evita que dos registros simultáneos pasen el mismo tope.
+  SELECT activo INTO v_activo FROM empleado WHERE dni = NEW.dni FOR UPDATE;
   IF v_activo = 0 THEN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'El empleado está dado de baja y no puede registrar solicitudes';
+  END IF;
+
+  IF NEW.hora_registro > NEW.hora_de_inicio THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'La solicitud debe registrarse antes de la hora de inicio del permiso';
+  END IF;
+  IF TIME_TO_SEC(NEW.hora_de_inicio) + NEW.duracion * 60 > 86400 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'El permiso debe terminar el mismo día';
+  END IF;
+  IF TIME_TO_SEC(NEW.tiempo_laborar) <= 0 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'El tiempo a compensar debe ser mayor que cero';
+  END IF;
+  IF NEW.estado <> 'Rechazado' AND EXISTS (
+       SELECT 1 FROM solicitud_permiso
+        WHERE dni = NEW.dni AND fecha_solicitud = NEW.fecha_solicitud
+          AND activo = 1 AND estado <> 'Rechazado'
+          AND TIME_TO_SEC(hora_de_inicio) < TIME_TO_SEC(NEW.hora_de_inicio) + NEW.duracion * 60
+          AND TIME_TO_SEC(NEW.hora_de_inicio) < TIME_TO_SEC(hora_de_inicio) + duracion * 60) THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'El empleado ya tiene otro permiso que se cruza con ese horario';
   END IF;
 
   IF NEW.subtipo = 'Urgente' THEN
@@ -198,11 +221,20 @@ BEGIN
 END$$
 
 -- (2) Solo se modifican solicitudes pendientes; un estado resuelto
---     no vuelve a Pendiente y una solicitud anulada no se reactiva.
+--     no cambia y una solicitud anulada no se modifica ni se reactiva.
+--     Al editar se vuelven a validar el horario y los topes de (1).
 CREATE TRIGGER trg_solicitud_validar_cambio
 BEFORE UPDATE ON solicitud_permiso
 FOR EACH ROW
 BEGIN
+  DECLARE v_usadas INT;
+  DECLARE v_activo TINYINT;
+  DECLARE v_cambia TINYINT DEFAULT NOT (
+        NEW.fecha_solicitud <=> OLD.fecha_solicitud AND NEW.hora_registro <=> OLD.hora_registro
+    AND NEW.hora_de_inicio <=> OLD.hora_de_inicio AND NEW.duracion <=> OLD.duracion
+    AND NEW.subtipo <=> OLD.subtipo AND NEW.dias <=> OLD.dias
+    AND NEW.tiempo_laborar <=> OLD.tiempo_laborar AND NEW.dni <=> OLD.dni);
+
   IF OLD.activo = 0 AND NEW.activo = 1 THEN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'Una solicitud anulada no puede reactivarse; registre una nueva';
@@ -211,13 +243,78 @@ BEGIN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'Una solicitud resuelta no puede volver a Pendiente';
   END IF;
-  IF OLD.estado <> 'Pendiente' AND (
-       NEW.fecha_solicitud <> OLD.fecha_solicitud OR NEW.hora_de_inicio <> OLD.hora_de_inicio
-    OR NEW.duracion <> OLD.duracion OR NEW.subtipo <> OLD.subtipo OR NEW.dni <> OLD.dni) THEN
+  IF OLD.estado <> 'Pendiente' AND NEW.estado <> OLD.estado THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'Una solicitud resuelta no puede cambiar de decisión';
+  END IF;
+  IF OLD.activo = 0 AND (v_cambia OR NEW.estado <> OLD.estado) THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'Una solicitud anulada no se puede modificar';
+  END IF;
+  IF OLD.estado <> 'Pendiente' AND v_cambia THEN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'Solo se pueden modificar los datos de solicitudes pendientes';
   END IF;
+  IF v_cambia THEN
+    SELECT activo INTO v_activo FROM empleado WHERE dni = NEW.dni FOR UPDATE;
+    IF NEW.hora_registro > NEW.hora_de_inicio THEN
+      SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'La solicitud debe registrarse antes de la hora de inicio del permiso';
+    END IF;
+    IF TIME_TO_SEC(NEW.hora_de_inicio) + NEW.duracion * 60 > 86400 THEN
+      SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'El permiso debe terminar el mismo día';
+    END IF;
+    IF TIME_TO_SEC(NEW.tiempo_laborar) <= 0 THEN
+      SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'El tiempo a compensar debe ser mayor que cero';
+    END IF;
+    IF NEW.estado <> 'Rechazado' AND EXISTS (
+         SELECT 1 FROM solicitud_permiso
+          WHERE dni = NEW.dni AND fecha_solicitud = NEW.fecha_solicitud
+            AND id_permiso <> NEW.id_permiso
+            AND activo = 1 AND estado <> 'Rechazado'
+            AND TIME_TO_SEC(hora_de_inicio) < TIME_TO_SEC(NEW.hora_de_inicio) + NEW.duracion * 60
+            AND TIME_TO_SEC(NEW.hora_de_inicio) < TIME_TO_SEC(hora_de_inicio) + duracion * 60) THEN
+      SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'El empleado ya tiene otro permiso que se cruza con ese horario';
+    END IF;
+    IF NEW.subtipo = 'Urgente' THEN
+      SELECT COUNT(*) INTO v_usadas
+        FROM solicitud_permiso
+       WHERE dni = NEW.dni
+         AND id_permiso <> NEW.id_permiso
+         AND subtipo = 'Urgente'
+         AND estado <> 'Rechazado'
+         AND activo = 1
+         -- Semana de lunes a domingo que contiene la fecha solicitada.
+         AND fecha_solicitud BETWEEN NEW.fecha_solicitud - INTERVAL WEEKDAY(NEW.fecha_solicitud) DAY
+                                 AND NEW.fecha_solicitud - INTERVAL WEEKDAY(NEW.fecha_solicitud) DAY + INTERVAL 6 DAY;
+      IF v_usadas >= 1 THEN
+        SIGNAL SQLSTATE '45000'
+          SET MESSAGE_TEXT = 'Tope excedido: solo 1 solicitud de tolerancia (Urgente) por semana';
+      END IF;
+    ELSE
+      SELECT COUNT(*) INTO v_usadas
+        FROM solicitud_permiso
+       WHERE dni = NEW.dni
+         AND id_permiso <> NEW.id_permiso
+         AND subtipo = 'Personal'
+         AND estado <> 'Rechazado'
+         AND activo = 1
+         AND fecha_solicitud BETWEEN DATE_FORMAT(NEW.fecha_solicitud, '%Y-%m-01')
+                                 AND LAST_DAY(NEW.fecha_solicitud);
+      IF v_usadas >= 2 THEN
+        SIGNAL SQLSTATE '45000'
+          SET MESSAGE_TEXT = 'Tope excedido: solo 2 permisos personales por mes';
+      END IF;
+    END IF;
+  END IF;
   IF NEW.activo = 0 AND OLD.activo = 1 THEN
+    IF EXISTS (SELECT 1 FROM compensacion WHERE id_permiso = OLD.id_permiso) THEN
+      SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'La solicitud ya tiene compensaciones registradas y no puede anularse';
+    END IF;
     SET NEW.fecha_baja = NOW();
   END IF;
 END$$
@@ -258,8 +355,9 @@ BEGIN
 END$$
 
 -- (5) Reglas de la compensación: solo para solicitudes aprobadas y
---     activas, máximo 7 filas por permiso (regla del formato físico) y
---     sin superar el tiempo a laborar.
+--     activas, máximo 7 filas por permiso (regla del formato físico),
+--     sin superar el tiempo a laborar, desde la fecha del permiso (se
+--     compensa un permiso ya utilizado) y sin cruzarse entre sí.
 CREATE TRIGGER trg_compensacion_max7
 BEFORE INSERT ON compensacion
 FOR EACH ROW
@@ -268,9 +366,11 @@ BEGIN
   DECLARE v_activo TINYINT;
   DECLARE v_tiempo TIME;
   DECLARE v_compensado INT;
+  DECLARE v_fecha DATE;
 
-  SELECT estado, activo, tiempo_laborar INTO v_estado, v_activo, v_tiempo
-    FROM solicitud_permiso WHERE id_permiso = NEW.id_permiso;
+  -- El bloqueo de la solicitud evita que dos bloques simultáneos superen el total.
+  SELECT estado, activo, tiempo_laborar, fecha_solicitud INTO v_estado, v_activo, v_tiempo, v_fecha
+    FROM solicitud_permiso WHERE id_permiso = NEW.id_permiso FOR UPDATE;
 
   IF v_estado <> 'Aprobado' OR v_activo = 0 THEN
     SIGNAL SQLSTATE '45000'
@@ -279,6 +379,16 @@ BEGIN
   IF v_tiempo IS NULL THEN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'La solicitud no tiene tiempo a laborar: no requiere compensación';
+  END IF;
+  IF NEW.fecha_compensacion < v_fecha THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'La compensación no puede ser anterior a la fecha del permiso';
+  END IF;
+  IF EXISTS (SELECT 1 FROM compensacion
+              WHERE id_permiso = NEW.id_permiso AND fecha_compensacion = NEW.fecha_compensacion
+                AND hora_inicio < NEW.hora_fin AND NEW.hora_inicio < hora_fin) THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'El bloque se cruza con otro bloque de la misma solicitud';
   END IF;
   IF (SELECT COUNT(*) FROM compensacion WHERE id_permiso = NEW.id_permiso) >= 7 THEN
     SIGNAL SQLSTATE '45000'

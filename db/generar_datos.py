@@ -162,7 +162,7 @@ out.append("--          generar_datos.py (semilla fija), respetando los topes y 
 out.append("--          regla de compensación (los disparadores validan cada fila).")
 out.append("-- Parte C: bajas lógicas de ejemplo.")
 out.append("-- =====================================================================")
-out.append("USE idema_permisos;")
+out.append("USE permisos_hora;")
 out.append("")
 out.append("-- Parte A ------------------------------------------------------------")
 out.append(ORIGINAL.strip())

@@ -8,3 +8,7 @@ __pycache__/
 # Compilados (se publican en la Release de GitHub)
 frontend/dist/
 dist/
+
+# Documentos de la entrega: quedan solo en local
+docs/*
+!docs/capturas/

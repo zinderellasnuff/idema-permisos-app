@@ -5,7 +5,7 @@ async function pedir(metodo, ruta, cuerpo) {
     method: metodo,
     headers: cuerpo ? { 'Content-Type': 'application/json' } : undefined,
     body: cuerpo ? JSON.stringify(cuerpo) : undefined,
-  })
+  }).catch(() => { throw new Error('No hay conexión con el servidor. Verifica que la ventana de iniciar.bat siga abierta.') })
   const datos = await resp.json().catch(() => ({ error: 'Respuesta no válida del servidor' }))
   if (!resp.ok) throw new Error(datos.error || `Error ${resp.status}`)
   return datos

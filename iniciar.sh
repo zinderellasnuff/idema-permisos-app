@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Inicia el aplicativo IDEMA - Permisos (Linux/macOS).
+# Inicia el aplicativo Sistema de permisos - Permisos (Linux/macOS).
 set -e
 cd "$(dirname "$0")/backend"
 [ -f .env ] || { cp .env.example .env; echo "Se creó backend/.env: revise la contraseña de la base de datos."; }

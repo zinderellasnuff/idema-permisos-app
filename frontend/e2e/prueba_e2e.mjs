@@ -25,7 +25,7 @@ async function conectar() {
     } catch { /* Chrome aún no está listo */ }
     await espera(200)
   }
-  await new Promise((r) => ws.addEventListener('open', r))
+  if (ws.readyState !== WebSocket.OPEN) await new Promise((r) => ws.addEventListener('open', r))
   ws.addEventListener('message', (e) => {
     const m = JSON.parse(e.data)
     if (pendientes.has(m.id)) { pendientes.get(m.id)(m); pendientes.delete(m.id) }
@@ -48,16 +48,23 @@ async function captura(nombre) {
 const AYUDA = `
 window.$t = (sel, txt) => [...document.querySelectorAll(sel)].find((e) => e.textContent.trim().includes(txt));
 window.$click = (sel, txt) => { const e = $t(sel, txt); if (!e) throw new Error('No encontrado: ' + sel + ' ' + txt); e.click(); };
-window.$campo = (etiqueta, valor) => {
-  const l = [...document.querySelectorAll('.modal label.campo')].find((x) => x.querySelector('span').textContent.trim() === etiqueta);
+window.$control = (etiqueta) => {
+  const l = [...document.querySelectorAll('.modal .campo')].find((x) => x.querySelector('span').textContent.trim() === etiqueta);
   if (!l) throw new Error('Campo no encontrado: ' + etiqueta);
-  const el = l.querySelector('input, select');
-  const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  return l.querySelector('input, select, textarea');
+};
+window.$error = (etiqueta) => $control(etiqueta).closest('.campo.con-error')?.querySelector('.bajo-campo').textContent || '';
+window.$campo = (etiqueta, valor) => {
+  const el = $control(etiqueta);
+  const proto = { SELECT: HTMLSelectElement, TEXTAREA: HTMLTextAreaElement }[el.tagName]?.prototype || HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, valor);
   el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
 };
 // Espera un aviso nuevo (distinto del último leído), porque el anterior puede seguir visible.
 window.$aviso = async () => { for (let i = 0; i < 60; i++) { const a = document.querySelector('.aviso'); const v = a && a.className + '|' + a.textContent; if (v && v !== window.__ultimo) { window.__ultimo = v; return v; } await new Promise((r) => setTimeout(r, 100)); } return ''; };
+window.$empleado = async (dni) => { $campo('Empleado', dni); await $espera(() => document.querySelectorAll('.selector [role=option]').length === 1); document.querySelector('.selector [role=option]').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })); };
+window.$elige = (txt) => { const l = [...document.querySelectorAll('.modal .opcion')].find((x) => x.querySelector('strong').textContent === txt); if (!l) throw new Error('Opción no encontrada: ' + txt); l.click(); };
+window.$busca = (v) => { const i = document.querySelector('input[type=search]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, v); i.dispatchEvent(new Event('input', { bubbles: true })); };
 window.$fila = (txt) => [...document.querySelectorAll('tbody tr')].find((tr) => tr.textContent.includes(txt));
 window.$espera = async (fn) => { for (let i = 0; i < 50; i++) { if (fn()) return true; await new Promise((r) => setTimeout(r, 100)); } throw new Error('Tiempo de espera agotado'); };
 `
@@ -83,50 +90,59 @@ try {
   console.log('Empleados: alta'); await ir('empleados')
   await js(`await $espera(() => document.querySelectorAll('tbody tr').length > 10)`)
   await captura('02_empleados')
-  await js(`$click('button', '+ Nuevo empleado')`); await espera(200)
+  await js(`$click('button', 'Nuevo empleado')`); await espera(200)
+  // Validación: campos vacíos, DNI repetido y nombre con números.
+  await js(`$click('.modal button', 'Registrar empleado'); await $espera(() => $error('DNI') && $error('Nombres') && $error('Cargo'))`)
+  await js(`$campo('DNI','72123249'); $campo('Nombres','Ana 3')`); await js(`$click('.modal button', 'Registrar empleado'); await $espera(() => /Ya es el DNI de/.test($error('DNI')) && /solo letras/.test($error('Nombres')))`)
+  await captura('03a_errores')
   await js(`$campo('DNI','70112233'); $campo('Nombres','Andrea'); $campo('Apellidos','Prueba Manual'); $campo('Cargo','Docente'); $campo('Área','Sistemas')`)
   await captura('03_nuevo_empleado')
-  await js(`$click('.modal button', 'Guardar')`)
+  await js(`$click('.modal button', 'Registrar empleado')`)
   assert.match(await js(`return await $aviso()`), /aviso-ok\|Empleado registrado/)
   await captura('04_empleado_registrado')
 
   console.log('Solicitudes: registro y tope'); await ir('solicitudes')
   await js(`await $espera(() => document.querySelectorAll('tbody tr').length > 10)`)
   await captura('05_solicitudes')
-  await js(`$click('button', '+ Nueva solicitud')`); await espera(300)
-  await js(`$campo('Empleado','70112233'); $campo('Subtipo','Urgente'); $campo('Fecha del permiso','2026-11-23'); $campo('Hora de registro','07:20'); $campo('Hora de inicio','08:00'); $campo('Duración (minutos)','30'); $campo('Tiempo a compensar','00:30')`)
+  await js(`$click('button', 'Nueva solicitud')`); await espera(300)
+  await js(`await $empleado('70112233'); $elige('Urgente'); $campo('Fecha del permiso','2026-11-23'); $campo('Hora de registro','07:20'); $campo('Hora de inicio','08:00'); $campo('Minutos','30'); $t('.modal .check', 'Recuperará').querySelector('input').click(); await $espera(() => $t('.modal .campo', 'Minutos a compensar')); $campo('Minutos a compensar','30')`)
   await captura('06_nueva_solicitud')
-  await js(`$click('.modal button', 'Guardar')`)
+  await js(`$click('.modal button', 'Registrar solicitud')`)
   assert.match(await js(`return await $aviso()`), /aviso-ok\|Solicitud registrada/)
   await espera(3800)
-  await js(`$click('button', '+ Nueva solicitud')`); await espera(300)
-  await js(`$campo('Empleado','70112233'); $campo('Subtipo','Urgente'); $campo('Fecha del permiso','2026-11-25'); $campo('Hora de registro','07:30'); $campo('Hora de inicio','08:00'); $campo('Duración (minutos)','20')`)
-  await js(`$click('.modal button', 'Guardar')`)
-  assert.match(await js(`return await $aviso()`), /aviso-error\|Tope excedido/)
+  await js(`$click('button', 'Nueva solicitud')`); await espera(300)
+  await js(`await $empleado('70112233'); $elige('Urgente'); $campo('Fecha del permiso','2026-11-25'); $campo('Hora de registro','07:30'); $campo('Hora de inicio','08:00'); $campo('Minutos','20')`)
+  await js(`$click('.modal button', 'Registrar solicitud')`)
+  await js(`await $espera(() => document.querySelector('.resumen.con-error'))`)  // avisa del tope antes de guardar
+  await espera(400); assert.ok(await js(`return !!document.querySelector('.modal .con-error') && document.querySelectorAll('.modal').length === 1`), 'el formulario no debe enviarse con el tope agotado')
   await captura('07_tope_rechazado')
-  await js(`$click('.modal button', 'Cancelar')`); await espera(7200)
+  await js(`$click('.modal button', 'Cancelar'); await $espera(() => $t('.modal', '¿Descartar los cambios?'))`)
+  await captura('07a_descartar')
+  await js(`$click('.modal button', 'Descartar'); await $espera(() => !document.querySelector('.modal'))`)
 
   console.log('Solicitudes: aprobación y compensación')
-  await js(`$set = (v) => { const i = document.querySelector('input[type=search]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i, v); i.dispatchEvent(new Event('input',{bubbles:true})) }; $set('70112233')`)
+  await js(`$busca('70112233')`)
   await js(`await $espera(() => document.querySelectorAll('tbody tr').length === 1)`)
   await js(`[...$fila('Andrea').querySelectorAll('button')].find((b) => b.textContent === 'Resolver').click()`); await espera(300)
-  await js(`$campo('Decisión','Aprobado'); $campo('Tipo de permiso','Tardanza justificada'); $campo('Motivo','Cita médica')`)
+  await js(`$elige('Aprobar'); $campo('Tipo de permiso','Tardanza justificada'); $campo('Motivo','Cita médica')`)
   await captura('08_resolver')
-  await js(`$click('.modal button', 'Confirmar')`)
+  await js(`$click('.modal button', 'Aprobar solicitud')`)
   assert.match(await js(`return await $aviso()`), /aviso-ok\|Solicitud aprobada/)
   await js(`await $espera(() => $fila('Andrea')?.textContent.includes('Aprobado'))`)
   await js(`[...$fila('Andrea').querySelectorAll('button')].find((b) => b.textContent === 'Compensación').click()`); await espera(500)
   await js(`$campo('Fecha','2026-11-24'); $campo('Inicio','17:00'); $campo('Fin','17:30')`)
-  await js(`$click('.modal button', '+ Agregar bloque')`)
+  await js(`$click('.modal button', 'Agregar bloque')`)
   assert.match(await js(`return await $aviso()`), /aviso-ok\|Bloque registrado/)
   await js(`await $espera(() => document.querySelector('.modal tbody tr'))`)
   await js(`$click('.modal button', 'Firma colaborador')`); await espera(600)
   await captura('09_compensacion')
-  await js(`$click('.modal button', '✕')`)
+  await js(`document.querySelector('.modal [aria-label=Cerrar]').click()`)
 
   console.log('Empleados: baja lógica'); await ir('empleados')
-  await js(`await $espera(() => $fila('70112233'))`)
-  await js(`window.confirm = () => true; [...$fila('70112233').querySelectorAll('button')].find((b) => b.textContent === 'Dar de baja').click()`)
+  await js(`$busca('70112233'); await $espera(() => document.querySelectorAll('tbody tr').length === 1 && $fila('70112233'))`)
+  await js(`[...$fila('70112233').querySelectorAll('button')].find((b) => b.textContent === 'Dar de baja').click()`); await espera(300)
+  await captura('10a_confirmar_baja')
+  await js(`$click('.modal .btn.peligro', 'Dar de baja')`)
   assert.match(await js(`return await $aviso()`), /aviso-ok\|Empleado dado de baja/)
   await js(`await $espera(() => $fila('70112233')?.textContent.includes('Baja'))`)
   await captura('10_baja_logica')
@@ -141,7 +157,7 @@ try {
   }
 
   console.log('Bitácora'); await ir('bitacora')
-  await js(`await $espera(() => $fila('BAJA'))`)
+  await js(`await $espera(() => $fila('Baja'))`)
   await captura('12_bitacora')
   console.log('\nPRUEBA E2E: OK')
 } catch (e) {

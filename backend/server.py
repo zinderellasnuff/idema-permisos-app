@@ -1,4 +1,4 @@
-"""Servidor del aplicativo IDEMA - Permisos por hora.
+"""Servidor del aplicativo Sistema de permisos - Permisos por hora.
 
 Backend nativo en Python: usa solo la biblioteca estándar (http.server) para
 la API REST y el driver PyMySQL para llamar a los procedimientos almacenados.
@@ -35,7 +35,7 @@ cargar_env(Path(__file__).resolve().parent / ".env")
 
 from db import ErrorNegocio, llamar  # noqa: E402  (después de cargar .env)
 
-ESTATICOS = Path(os.environ.get("IDEMA_STATIC_DIR", BASE / "static"))
+ESTATICOS = Path(os.environ.get("PERMISOS_STATIC_DIR", BASE / "static"))
 if not ESTATICOS.exists():
     ESTATICOS = BASE.parent / "frontend" / "dist"
 
@@ -48,17 +48,27 @@ class EntradaInvalida(Exception):
 
 
 def texto(datos, campo, maximo, obligatorio=True):
-    valor = (datos.get(campo) or "").strip() if isinstance(datos.get(campo, ""), str) else datos.get(campo)
+    valor = datos.get(campo) or ""
+    if not isinstance(valor, str):
+        raise EntradaInvalida(f"El campo {campo} debe ser texto")
+    valor = valor.strip()
     if obligatorio and not valor:
         raise EntradaInvalida(f"El campo {campo} es obligatorio")
-    if valor and len(str(valor)) > maximo:
+    if len(valor) > maximo:
         raise EntradaInvalida(f"El campo {campo} admite como máximo {maximo} caracteres")
     return valor or None
 
 
 def dni(valor):
-    if not re.fullmatch(r"\d{8}", str(valor or "")):
+    if not isinstance(valor, str) or not re.fullmatch(r"[0-9]{8}", valor):
         raise EntradaInvalida("El DNI debe tener exactamente 8 dígitos")
+    return valor
+
+
+def nombre(datos, campo):
+    valor = " ".join(texto(datos, campo, 50).split())
+    if not re.fullmatch(r"[^\W\d_]+(?:[ '.\-]+[^\W\d_]+)*\.?", valor):
+        raise EntradaInvalida(f"El campo {campo} solo admite letras, espacios, guion o apóstrofo")
     return valor
 
 
@@ -68,8 +78,10 @@ def fecha(valor, campo="fecha", obligatorio=True):
             raise EntradaInvalida(f"El campo {campo} es obligatorio")
         return None
     try:
+        if len(valor) != 10:  # fromisoformat también acepta otros formatos, como 2026W471
+            raise ValueError
         return date.fromisoformat(valor).isoformat()
-    except ValueError:
+    except (TypeError, ValueError):
         raise EntradaInvalida(f"El campo {campo} debe tener el formato AAAA-MM-DD") from None
 
 
@@ -78,13 +90,15 @@ def hora(valor, campo="hora", obligatorio=True):
         if obligatorio:
             raise EntradaInvalida(f"El campo {campo} es obligatorio")
         return None
-    if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", valor):
+    if not re.fullmatch(r"([01][0-9]|2[0-3]):[0-5][0-9]", str(valor)):
         raise EntradaInvalida(f"El campo {campo} debe tener el formato HH:MM")
     return valor
 
 
 def entero(valor, campo, minimo, maximo):
     try:
+        if isinstance(valor, (bool, float)):  # 30.9 no debe convertirse en 30
+            raise ValueError
         numero = int(valor)
     except (TypeError, ValueError):
         raise EntradaInvalida(f"El campo {campo} debe ser un número entero") from None
@@ -94,7 +108,7 @@ def entero(valor, campo, minimo, maximo):
 
 
 def opcion(valor, campo, opciones):
-    if valor not in opciones:
+    if not isinstance(valor, str) or valor not in opciones:
         raise EntradaInvalida(f"El campo {campo} debe ser uno de: {', '.join(opciones)}")
     return valor
 
@@ -189,7 +203,7 @@ def empleados_listar(q, d):
 
 
 def datos_empleado(d):
-    return (texto(d, "nombres", 50), texto(d, "apellidos", 50), texto(d, "cargo", 30), texto(d, "area", 30))
+    return (nombre(d, "nombres"), nombre(d, "apellidos"), texto(d, "cargo", 30), texto(d, "area", 30))
 
 
 @ruta("POST", r"/api/empleados")
@@ -228,7 +242,7 @@ def datos_solicitud(d):
             hora(d.get("hora_de_inicio"), "hora_de_inicio"),
             entero(d.get("duracion"), "duracion", 1, 60),
             opcion(d.get("subtipo"), "subtipo", ("Urgente", "Personal")),
-            entero(d.get("dias") or 1, "dias", 1, 30),
+            entero(d.get("dias", 1), "dias", 1, 30),
             hora(d.get("tiempo_laborar"), "tiempo_laborar", obligatorio=False))
 
 
@@ -306,7 +320,7 @@ def bitacora(q, d):
 # Servidor HTTP
 # ---------------------------------------------------------------------------
 class Manejador(BaseHTTPRequestHandler):
-    server_version = "IDEMA-Permisos/1.0"
+    server_version = "Permisos/1.0"
 
     def _responder(self, estado, cuerpo, tipo="application/json; charset=utf-8"):
         datos = cuerpo if isinstance(cuerpo, bytes) else json.dumps(cuerpo, ensure_ascii=False).encode("utf-8")
@@ -318,16 +332,23 @@ class Manejador(BaseHTTPRequestHandler):
         self.wfile.write(datos)
 
     def _api(self, metodo):
+        # Solo la propia interfaz puede llamar a la API: otra página abierta en el navegador no.
+        host = self.headers.get("Host", "")
+        origen = self.headers.get("Origin")
+        if urlparse(f"//{host}").hostname not in ("127.0.0.1", "localhost") or (
+                origen and urlparse(origen).hostname not in ("127.0.0.1", "localhost")):
+            return self._responder(HTTPStatus.FORBIDDEN, {"error": "Origen no permitido"})
         url = urlparse(self.path)
         consulta = {k: v[0] for k, v in parse_qs(url.query).items()}
         cuerpo = {}
         if metodo in ("POST", "PUT"):
-            largo = int(self.headers.get("Content-Length") or 0)
+            largo = self.headers.get("Content-Length") or "0"
+            largo = int(largo) if largo.isdecimal() else 100_001
             if largo > 100_000:
                 return self._responder(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "Petición demasiado grande"})
             try:
                 cuerpo = json.loads(self.rfile.read(largo) or b"{}")
-            except json.JSONDecodeError:
+            except ValueError:  # JSON mal formado o texto que no es UTF-8
                 return self._responder(HTTPStatus.BAD_REQUEST, {"error": "JSON no válido"})
             if not isinstance(cuerpo, dict):
                 return self._responder(HTTPStatus.BAD_REQUEST, {"error": "Se esperaba un objeto JSON"})
@@ -339,6 +360,8 @@ class Manejador(BaseHTTPRequestHandler):
                     return self._responder(HTTPStatus.CREATED if metodo == "POST" else HTTPStatus.OK, resultado)
                 except (EntradaInvalida, ErrorNegocio) as error:
                     return self._responder(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                except OverflowError:
+                    return self._responder(HTTPStatus.BAD_REQUEST, {"error": "Valor fuera del rango permitido"})
                 except Exception as error:  # error inesperado: no se expone el detalle
                     self.log_error("Error interno en %s %s: %r", metodo, url.path, error)
                     return self._responder(HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -348,7 +371,7 @@ class Manejador(BaseHTTPRequestHandler):
     def _estatico(self):
         ruta_rel = unquote(urlparse(self.path).path).lstrip("/") or "index.html"
         archivo = (ESTATICOS / ruta_rel).resolve()
-        if not str(archivo).startswith(str(ESTATICOS.resolve())) or not archivo.is_file():
+        if not archivo.is_relative_to(ESTATICOS.resolve()) or not archivo.is_file():
             archivo = ESTATICOS / "index.html"  # la SPA resuelve sus propias vistas
         if not archivo.is_file():
             return self._responder(HTTPStatus.NOT_FOUND, b"Interfaz no compilada: ejecute npm run build",
@@ -370,9 +393,9 @@ class Manejador(BaseHTTPRequestHandler):
 
 
 def main():
-    puerto = int(os.environ.get("IDEMA_APP_PORT", "8080"))
+    puerto = int(os.environ.get("PERMISOS_APP_PORT", "8080"))
     servidor = ThreadingHTTPServer(("127.0.0.1", puerto), Manejador)
-    print(f"IDEMA Permisos escuchando en http://127.0.0.1:{puerto}  (Ctrl+C para salir)")
+    print(f"Sistema de permisos escuchando en http://127.0.0.1:{puerto}  (Ctrl+C para salir)")
     try:
         servidor.serve_forever()
     except KeyboardInterrupt:

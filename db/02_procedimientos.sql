@@ -1,5 +1,5 @@
 -- =====================================================================
--- IDEMA - Registro de Inasistencias o Permisos
+-- Sistema de permisos - Registro de Inasistencias o Permisos
 -- Script 2 (Entrega 5): procedimientos almacenados.
 -- El aplicativo NO ejecuta SQL directo sobre las tablas: toda lectura y
 -- escritura se hace con CALL a estos procedimientos.
@@ -9,7 +9,7 @@
 --   * sp_firma_*         firmas de la compensación
 --   * sp_rep_01..10      reportes (todos usan JOIN)
 -- =====================================================================
-USE idema_permisos;
+USE permisos_hora;
 
 DROP PROCEDURE IF EXISTS sp_empleado_listar;
 DROP PROCEDURE IF EXISTS sp_empleado_obtener;
@@ -75,6 +75,13 @@ BEGIN
   IF EXISTS (SELECT 1 FROM empleado WHERE dni = p_dni) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Ya existe un empleado con ese DNI';
   END IF;
+  IF TRIM(p_nombres) NOT REGEXP '^[[:alpha:]]+([ .''-]+[[:alpha:]]+)*[.]?$'
+     OR TRIM(p_apellidos) NOT REGEXP '^[[:alpha:]]+([ .''-]+[[:alpha:]]+)*[.]?$' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Los nombres y apellidos solo admiten letras, espacios, guion o apóstrofo';
+  END IF;
+  IF TRIM(p_cargo) = '' OR TRIM(p_area) = '' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El cargo y el área son obligatorios';
+  END IF;
   INSERT INTO empleado (dni, nombres, apellidos, cargo, area)
   VALUES (p_dni, TRIM(p_nombres), TRIM(p_apellidos), TRIM(p_cargo), TRIM(p_area));
   CALL sp_empleado_obtener(p_dni);
@@ -85,6 +92,13 @@ CREATE PROCEDURE sp_empleado_actualizar(IN p_dni CHAR(8), IN p_nombres VARCHAR(5
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM empleado WHERE dni = p_dni) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Empleado no encontrado';
+  END IF;
+  IF TRIM(p_nombres) NOT REGEXP '^[[:alpha:]]+([ .''-]+[[:alpha:]]+)*[.]?$'
+     OR TRIM(p_apellidos) NOT REGEXP '^[[:alpha:]]+([ .''-]+[[:alpha:]]+)*[.]?$' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Los nombres y apellidos solo admiten letras, espacios, guion o apóstrofo';
+  END IF;
+  IF TRIM(p_cargo) = '' OR TRIM(p_area) = '' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El cargo y el área son obligatorios';
   END IF;
   UPDATE empleado
      SET nombres = TRIM(p_nombres), apellidos = TRIM(p_apellidos),
@@ -292,6 +306,10 @@ BEGIN
        SELECT 1 FROM firma_compensacion
         WHERE id_compensacion = p_id_compensacion AND firmante = 'Administrador') THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'No se puede quitar la firma del colaborador si ya firmó el administrador';
+  END IF;
+  -- Sin esta regla se podría quitar la firma y luego borrar un bloque ya firmado.
+  IF p_firmante = 'Administrador' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La firma del administrador es definitiva y no se puede quitar';
   END IF;
   DELETE FROM firma_compensacion WHERE id_compensacion = p_id_compensacion AND firmante = p_firmante;
   SELECT id_compensacion, firmante FROM firma_compensacion WHERE id_compensacion = p_id_compensacion;

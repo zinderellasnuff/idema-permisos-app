@@ -1,6 +1,6 @@
-# IDEMA · Registro de permisos por hora
+# Sistema de registro de permisos por hora
 
-Aplicativo cliente de la base de datos **idema_permisos** (MySQL 8.0) para el proceso de permisos por hora del Instituto Superior Tecnológico Particular Santiago Ramón y Cajal – IDEMA. Proyecto del curso Gestión de Datos e Información, Entrega 5 (Universidad Católica de Santa María).
+Aplicativo cliente de la base de datos **permisos_hora** (MySQL 8.0) para el proceso de permisos por hora de una organización. Proyecto del curso Gestión de Datos e Información, Entrega 5 (Universidad Católica de Santa María).
 
 **Integrantes:** Chipana Flores, Alexander Tomas · Gonzales Palacios, Noelia Patricia · Guzmán Flores, Aron Daniel · Kana Zambrano, Luz Clarita · Ramírez Garay, Jesús Esteban.
 
@@ -11,7 +11,7 @@ Navegador (React)  --HTTP/JSON-->  backend/server.py (Python, http.server)  --CA
 ```
 
 - **Sin frameworks de acceso a datos.** El backend usa solo la biblioteca estándar de Python (`http.server`) y el driver `PyMySQL`. No hay ORM ni modelos: toda operación es un `CALL` a un procedimiento almacenado.
-- **El usuario `idema_app` solo tiene `EXECUTE`**: no puede leer ni modificar las tablas directamente.
+- **El usuario `permisos_app` solo tiene `EXECUTE`**: no puede leer ni modificar las tablas directamente.
 - **Reglas en la base de datos:** 13 disparadores (topes de uso, bloqueo del borrado físico, transiciones de estado, reglas de compensación y bitácora de auditoría) y 30 procedimientos (CRUD, resolución y 10 reportes con JOIN).
 - **Borrado lógico:** empleados (baja/reactivación) y solicitudes (anulación). El borrado físico está bloqueado por disparador.
 
